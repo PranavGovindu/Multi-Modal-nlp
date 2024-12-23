@@ -1,0 +1,15 @@
+transformers
+torch
+sentence-transformers
+sentencepiece
+faiss-cpu
+spacy
+pytorch-lightning
+optuna
+ray[tune]
+gradio
+pandas
+torchmetrics
+neo4j
+longformer
+clip
