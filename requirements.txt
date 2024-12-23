@@ -11,5 +11,5 @@ gradio
 pandas
 torchmetrics
 neo4j
-longformer
+
 clip

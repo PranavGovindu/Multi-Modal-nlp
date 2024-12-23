@@ -1,7 +1,7 @@
 import optuna
 import numpy as np
 import logging
-from typing import Dict, Any, Optional, Union
+from typing import Dict, Any, Optional, Union, List
 from sklearn.model_selection import train_test_split
 from transformers import (
     AutoModelForSequenceClassification,
@@ -25,19 +25,34 @@ import pandas as pd
 import string
 from nltk.tokenize import word_tokenize
 from nltk.corpus import stopwords
-        
+
 logger = logging.getLogger(__name__)
 
-def process_and_store_documents(documents):
+def process_and_store_documents(documents: List[str]) -> tuple:
+    """Process and store documents with FAISS indexing.
+    
+    Args:
+        documents: List of document strings to process
+        
+    Returns:
+        tuple: (faiss_index, processed_documents, embeddings)
+    
+    Raises:
+        ValueError: If documents list is empty
+        RuntimeError: If document processing fails
+    """
     if not documents:
         raise ValueError("Documents list cannot be empty")
+        
     try:
         nltk.download('punkt', quiet=True)
         nltk.download('stopwords', quiet=True)
         stop_words = set(stopwords.words('english'))
         
-        def preprocess_text(text):
-            text = text.lower()
+        def preprocess_text(text: str) -> str:
+            if not isinstance(text, str):
+                text = str(text)
+            text = text.lower().strip()
             tokens = word_tokenize(text)
             tokens = [token for token in tokens 
                      if token not in stop_words
@@ -47,22 +62,22 @@ def process_and_store_documents(documents):
         
         processed_docs = [preprocess_text(doc) for doc in documents]
         model = SentenceTransformer('all-MiniLM-L6-v2')
-        embeddings = model.encode(processed_docs)
-        embeddings = np.array(embeddings).astype('float32')
+        embeddings = model.encode(processed_docs, convert_to_tensor=True)
+        embeddings = embeddings.cpu().numpy().astype('float32')
         dimension = embeddings.shape[1]
         
         index = faiss.IndexFlatL2(dimension)
-        index.add(embeddings)
+        if len(processed_docs) > 0:  # Only add if we have documents
+            index.add(embeddings)
         
         logger.info(f"Successfully processed and indexed {len(documents)} documents")
         return index, processed_docs, embeddings
     except Exception as e:
         logger.error(f"Failed to process and store documents: {str(e)}")
         raise RuntimeError(f"Document processing failed: {str(e)}")
-
-
-class ModelOptimizer:
-    TASK_CONFIGS = {
+    
+    class ModelOptimizer:
+        TASK_CONFIGS = {
         'classification': {
             'model_types': ['bert-base-uncased', 'roberta-base', 'distilbert-base-uncased'],
             'metrics': ['accuracy', 'f1'],
@@ -241,15 +256,83 @@ class ModelOptimizer:
             'study': study
         }
 
+    def preprocess_dataset(self, tokenizer: AutoTokenizer) -> Dataset:
+        if not isinstance(self.dataset, (Dataset, dict)):
+            raise ValueError("Dataset must be either a HuggingFace Dataset or a dictionary")
+            
+        try:
+            if isinstance(self.dataset, dict):
+                self.dataset = Dataset.from_dict(self.dataset)
+
+            if self.task == 'classification':
+                def tokenize_function(examples):
+                    return tokenizer(
+                        examples['text'],
+                        truncation=True,
+                        padding='max_length',
+                        max_length=512,
+                        return_tensors="pt"
+                    )
+                
+            # ... existing code ...
+
+            tokenized_dataset = self.dataset.map(
+                tokenize_function,
+                batched=True,
+                remove_columns=self.dataset.column_names,
+                load_from_cache_file=False
+            )
+
+            return tokenized_dataset
+
+        except Exception as e:
+            logger.error(f"Error preprocessing dataset: {str(e)}")
+            raise
+
 class KnowledgeGraph:
-    def __init__(self, uri, user, password):
-        self.driver = GraphDatabase.driver(uri, auth=(user, password))
-        self.nlp = spacy.load("en_core_web_sm")
+    def __init__(self, uri: str, user: str, password: str):
+        """Initialize KnowledgeGraph with Neo4j connection.
+        
+        Args:
+            uri: Neo4j connection URI
+            user: Username for authentication
+            password: Password for authentication
+        """
+        try:
+            self.driver = GraphDatabase.driver(uri, auth=(user, password))
+            self.nlp = spacy.load("en_core_web_sm")
+        except Exception as e:
+            logger.error(f"Failed to initialize KnowledgeGraph: {str(e)}")
+            raise
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
 
     def close(self):
-        self.driver.close()
+        """Safely close the Neo4j driver connection."""
+        try:
+            if hasattr(self, 'driver'):
+                self.driver.close()
+        except Exception as e:
+            logger.error(f"Error closing Neo4j connection: {str(e)}")
 
-    def build_knowledge_graph(self, text):
+    # ... existing code ...
+
+    def build_knowledge_graph(self, text: str) -> None:
+        """Build knowledge graph from input text.
+        
+        Args:
+            text: Input text to process
+            
+        Raises:
+            ValueError: If text is empty or invalid
+        """
+        if not text or not isinstance(text, str):
+            raise ValueError("Text must be a non-empty string")
+            
         doc = self.nlp(text)
         with self.driver.session() as session:
             try:
@@ -259,21 +342,5 @@ class KnowledgeGraph:
             except Exception as e:
                 logger.error(f"Failed to build knowledge graph: {str(e)}")
                 raise
-    @staticmethod
-    def _create_and_link_entity(tx, entity, label):
-        query = """
-        MERGE (e:Entity {name: $entity}) 
-        ON CREATE SET e.label = $label
-        """
-        tx.run(query, entity=entity, label=label)
-        
-    def knowledge_graph_search(self, query):
-        with self.driver.session() as session:
-            result = session.read_transaction(self._search_entity, query)
-            return [record["e.name"] for record in result]
 
-    @staticmethod
-    def _search_entity(tx, query):
-        return tx.run("MATCH (e:Entity) "
-                      "WHERE e.name CONTAINS $query "
-                      "RETURN e.name", query=query)
+    # ... existing code ...
